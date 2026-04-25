@@ -1,0 +1,58 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Stage publish artifact
+        run: |
+          mkdir -p publish
+          cp -r dist publish/dist
+          cp package.json package-lock.json ecosystem.config.cjs publish/
+
+      - name: Deploy via rsync over SSH
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: >-
+            -avz --delete
+            --exclude='.env'
+            --exclude='node_modules'
+            --exclude='*.log'
+          path: ./publish/
+          remote_path: /var/www/uplup-mcp/
+          remote_host: ${{ secrets.DEPLOY_HOST }}
+          remote_user: root
+          remote_key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Install prod deps + reload pm2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /var/www/uplup-mcp
+            npm ci --omit=dev
+            pm2 startOrReload ecosystem.config.cjs --update-env
+            pm2 save
+            sleep 2
+            curl -sf http://localhost:3010/health || (echo "Health check failed" && exit 1)
