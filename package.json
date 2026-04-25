@@ -1,0 +1,43 @@
+{
+  "name": "uplup-mcp",
+  "version": "0.1.0",
+  "description": "Uplup MCP server. Exposes the Uplup public API as Model Context Protocol tools, resources, and prompts for Claude, ChatGPT, Cursor, and other MCP clients.",
+  "license": "MIT",
+  "author": "Uplup <hello@uplup.com>",
+  "homepage": "https://uplup.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uplup/uplup-mcp.git"
+  },
+  "type": "module",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "axios": "^1.7.9",
+    "express": "^4.21.2",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
