@@ -87,4 +87,100 @@ export function registerPrompts(server: McpServer): void {
       ],
     }),
   );
+
+  server.registerPrompt(
+    'build_survey',
+    {
+      title: 'Build a survey',
+      description: 'Walks through creating a survey with rating scales, ranking, NPS, and open-ended fields.',
+      argsSchema: {
+        topic: z.string().describe('What the survey is measuring.'),
+        question_count: z.string().optional().describe('Approximate number of questions (default 8).'),
+        include_nps: z.string().optional().describe('"true" to include an NPS question (default true).'),
+      },
+    },
+    ({ topic, question_count, include_nps }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Build a ${question_count ?? 8}-question survey about "${topic}".\n\nSteps:\n` +
+              `1. Call create_form with content_type="form" and a clear title.\n` +
+              `2. Add a mix of question types via create_field:\n` +
+              `   - 1-2 rating fields (type="rating") for satisfaction / agreement\n` +
+              `   - 2-3 multipleChoice or radio for segmentation\n` +
+              `   - 1 longAnswer for open-ended feedback\n` +
+              (include_nps !== 'false' ? `   - 1 scale field (0-10) for NPS\n` : '') +
+              `3. Use update_form_design to apply a theme that matches a survey context (clean, neutral colours).\n` +
+              `4. Offer publish_form once the user reviews.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'manage_quiz_scoring',
+    {
+      title: 'Configure quiz scoring + outcomes',
+      description: 'Walk a user through setting up scoring rules, outcomes, randomization, and retake policy on an existing quiz.',
+      argsSchema: {
+        form_id: z.string().describe('Quiz form id.'),
+      },
+    },
+    ({ form_id }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Help me configure scoring on quiz ${form_id}.\n\nSteps:\n` +
+              `1. Call get_quiz_settings and list_fields to inspect current state.\n` +
+              `2. Walk through the user's preferences for:\n` +
+              `   - scoring_method (points / percentage / pass_fail / personality)\n` +
+              `   - passing_score and outcome bands\n` +
+              `   - retake_policy (allow_retakes, max_attempts, cooldown)\n` +
+              `   - question_behavior (randomize_questions, randomize_answers, instant_feedback)\n` +
+              `   - results_display (show_score, show_correct_answers timing)\n` +
+              `3. For each question, confirm the correct_answer + points using update_field.\n` +
+              `4. Call update_quiz_settings to apply the chosen rules.\n` +
+              `5. Recommend publish_form once configured.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'analyze_responses_by_field',
+    {
+      title: 'Per-field response breakdown',
+      description: 'Drop-off, completion time, and answer distribution per field — surfaces which questions are hurting conversion.',
+      argsSchema: {
+        form_id: z.string().describe('Form id from list_forms.'),
+        sample_size: z.string().optional().describe('Submissions to sample (default 200).'),
+      },
+    },
+    ({ form_id, sample_size }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Diagnose form ${form_id} field-by-field.\n\nSteps:\n` +
+              `1. Call list_fields to get the question list.\n` +
+              `2. Call get_performance_analytics to see drop-off rate per field.\n` +
+              `3. Call list_submissions with limit ${sample_size ?? 200} to sample answers.\n` +
+              `4. For each field compute: response rate, average answer length (text), top values (choice).\n` +
+              `5. Rank questions by drop-off impact and propose 3 specific edits ` +
+              `(rewording, making optional, adding helper text, splitting into multiple fields).`,
+          },
+        },
+      ],
+    }),
+  );
 }
