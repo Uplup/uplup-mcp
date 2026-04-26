@@ -174,7 +174,7 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         }).optional(),
       },
     },
-    async ({ form_id, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
+    async ({ form_id, label, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
       const richOptions = buildOptions({
         options,
         optionObjects: option_objects,
@@ -189,8 +189,11 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         hint,
         partialCredit: partial_credit,
       });
+      // Uplup's form document stores question text in `content`, not `label`.
+      // The frontend builder + public renderer both read `field.content`.
       const body: Record<string, unknown> = {
         ...rest,
+        ...(label !== undefined ? { content: label, label } : {}),
         ...(richOptions ? { options: richOptions } : {}),
         ...(quizConfig ? { quizConfig, points: quizConfig.points } : {}),
         ...(conditional_logic
@@ -245,7 +248,7 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         }).optional(),
       },
     },
-    async ({ form_id, field_id, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
+    async ({ form_id, field_id, label, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
       const richOptions = buildOptions({
         options,
         optionObjects: option_objects,
@@ -262,6 +265,7 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
       });
       const body: Record<string, unknown> = {
         ...rest,
+        ...(label !== undefined ? { content: label, label } : {}),
         ...(richOptions ? { options: richOptions } : {}),
         ...(quizConfig ? { quizConfig, points: quizConfig.points } : {}),
         ...(conditional_logic
