@@ -9,6 +9,7 @@ import { registerWebhooksTools } from '../tools/webhooks.js';
 import { registerAccountTools } from '../tools/account.js';
 import { registerDesignTools } from '../tools/design.js';
 import { registerPagesTools } from '../tools/pages.js';
+import { registerWheelsTools } from '../tools/wheels.js';
 import { registerFormResources } from '../resources/forms.js';
 import { registerTemplateResources } from '../resources/templates.js';
 import { registerPrompts } from '../prompts/index.js';
@@ -47,6 +48,7 @@ export function buildMcpServer(bearerToken: string): McpServer {
   registerAccountTools(server, api);
   registerDesignTools(server, api);
   registerPagesTools(server, api);
+  registerWheelsTools(server, api);
 
   registerFormResources(server, api);
   registerTemplateResources(server);
