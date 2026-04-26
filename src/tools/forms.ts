@@ -77,7 +77,10 @@ export function registerFormsTools(server: McpServer, api: UplupApiClient): void
         title: z.string().min(1).max(255),
         description: z.string().max(2000).optional(),
         content_type: z.enum(['form', 'quiz']).optional(),
-        presentation_mode: PresentationMode.optional(),
+        presentation_mode: PresentationMode.optional()
+          .describe(
+            'Layout: "card-form" (Conversational, one question per screen — DEFAULT and recommended for engagement), "multi-page" (classic top-to-bottom with page breaks), "one-page" (everything on one scrolling page). "conversational" is an alias for "card-form".',
+          ),
         custom_url: z.string().max(255).optional()
           .describe('URL slug under uplup.com/q/. Letters, numbers, hyphens.'),
         language: z.string().length(2).optional()
@@ -94,7 +97,10 @@ export function registerFormsTools(server: McpServer, api: UplupApiClient): void
           title,
           description,
           content_type: content_type ?? 'form',
-          presentation_mode,
+          // Default to conversational/card-form for engagement. Stored as
+          // `card-form` since Uplup uses that name internally for the
+          // one-question-per-screen mode (UI labels it "Conversational").
+          presentation_mode: presentation_mode ?? 'card-form',
           custom_url,
           language,
           scheduling: scheduling
