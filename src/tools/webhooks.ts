@@ -12,6 +12,7 @@ export function registerWebhooksTools(server: McpServer, api: UplupApiClient): v
       title: 'List webhook subscriptions',
       description: 'List all webhook subscriptions on the account. Pro plan or higher.',
       inputSchema: {},
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => runTool('list_webhooks', '/api/v1/webhooks', () => api.get('/api/v1/webhooks')),
   );
@@ -40,6 +41,7 @@ export function registerWebhooksTools(server: McpServer, api: UplupApiClient): v
       title: 'Get webhook',
       description: 'Fetch a single webhook subscription including its target URL.',
       inputSchema: { webhook_id: z.string().min(1) },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ webhook_id }) =>
       runTool('get_webhook', '/api/v1/webhooks/{id}', () =>
@@ -72,7 +74,7 @@ export function registerWebhooksTools(server: McpServer, api: UplupApiClient): v
       title: 'Delete webhook',
       description: 'Remove a webhook subscription. Future events will not be delivered.',
       inputSchema: { webhook_id: z.string().min(1) },
-      annotations: { destructiveHint: true },
+      annotations: { destructiveHint: true, idempotentHint: true },
     },
     async ({ webhook_id }) =>
       runTool('delete_webhook', '/api/v1/webhooks/{id}', () =>
@@ -94,11 +96,26 @@ export function registerWebhooksTools(server: McpServer, api: UplupApiClient): v
   );
 
   server.registerTool(
+    'regenerate_webhook_secret',
+    {
+      title: 'Regenerate webhook signing secret',
+      description: 'Rotate the HMAC signing secret used to sign webhook payloads. Existing receivers must update to the new secret.',
+      inputSchema: { webhook_id: z.string().min(1) },
+      annotations: { destructiveHint: true },
+    },
+    async ({ webhook_id }) =>
+      runTool('regenerate_webhook_secret', '/api/v1/webhooks/{id}/regenerate-secret', () =>
+        api.post(`/api/v1/webhooks/${encodeURIComponent(webhook_id)}/regenerate-secret`, {}),
+      ),
+  );
+
+  server.registerTool(
     'get_webhook_deliveries',
     {
       title: 'Webhook delivery log',
       description: 'Recent delivery attempts for a webhook, with status codes and response body summaries.',
       inputSchema: { webhook_id: z.string().min(1) },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ webhook_id }) =>
       runTool('get_webhook_deliveries', '/api/v1/webhooks/{id}/deliveries', () =>

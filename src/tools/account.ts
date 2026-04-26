@@ -10,6 +10,7 @@ export function registerAccountTools(server: McpServer, api: UplupApiClient): vo
       description:
         'Returns the connected user, brand, plan tier, response limits, and current month usage. Use this when a user asks "what plan am I on?" or to check remaining quota.',
       inputSchema: {},
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => runTool('get_account', '/api/v1/account', () => api.get('/api/v1/account')),
   );
