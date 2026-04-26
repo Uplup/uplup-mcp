@@ -12,6 +12,9 @@ const MCP_PUBLIC_URL = process.env.MCP_PUBLIC_URL ?? 'https://mcp.uplup.com';
 const UPLUP_API_BASE_URL = process.env.UPLUP_API_BASE_URL ?? 'https://api.uplup.com';
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes idle
 const SESSION_HEADER = 'mcp-session-id';
+// Hard cap on simultaneous sessions to bound memory under abuse. At ~5MB per
+// session this caps memory growth at roughly 25GB before LRU eviction kicks in.
+const MAX_SESSIONS = 5000;
 
 interface Session {
   transport: StreamableHTTPServerTransport;
@@ -22,14 +25,32 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
+function closeSession(id: string, s: Session): void {
+  sessions.delete(id);
+  s.transport.close().catch(() => undefined);
+  s.server.close().catch(() => undefined);
+}
+
 function purgeStaleSessions(): void {
   const cutoff = Date.now() - SESSION_TTL_MS;
   for (const [id, s] of sessions) {
-    if (s.lastSeen < cutoff) {
-      sessions.delete(id);
-      s.transport.close().catch(() => undefined);
-      s.server.close().catch(() => undefined);
+    if (s.lastSeen < cutoff) closeSession(id, s);
+  }
+}
+
+/** Evict the least-recently-seen session. Called when at MAX_SESSIONS. */
+function evictOldestSession(): void {
+  let oldestId: string | undefined;
+  let oldestSeen = Infinity;
+  for (const [id, s] of sessions) {
+    if (s.lastSeen < oldestSeen) {
+      oldestSeen = s.lastSeen;
+      oldestId = id;
     }
+  }
+  if (oldestId) {
+    const s = sessions.get(oldestId)!;
+    closeSession(oldestId, s);
   }
 }
 setInterval(purgeStaleSessions, 60_000).unref();
@@ -70,10 +91,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// Per-IP token bucket.
+// Per-IP token bucket. Buckets are pruned every 5 minutes to bound memory
+// growth from IP-rotation attacks.
 const buckets = new Map<string, { tokens: number; last: number }>();
 const RATE_LIMIT = 120;
 const RATE_REFILL_PER_SEC = 2;
+const BUCKET_IDLE_MS = 5 * 60 * 1000;
 
 function rateLimit(ip: string): boolean {
   const now = Date.now();
@@ -89,6 +112,14 @@ function rateLimit(ip: string): boolean {
   buckets.set(ip, b);
   return true;
 }
+
+function pruneIdleBuckets(): void {
+  const cutoff = Date.now() - BUCKET_IDLE_MS;
+  for (const [ip, b] of buckets) {
+    if (b.last < cutoff) buckets.delete(ip);
+  }
+}
+setInterval(pruneIdleBuckets, 60_000).unref();
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', server: 'uplup-mcp', version: '0.1.0', sessions: sessions.size });
@@ -143,6 +174,12 @@ async function handleMcp(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // Hard cap on simultaneous sessions; evict the LRU one if at the cap.
+    if (sessions.size >= MAX_SESSIONS) {
+      log.warn({ size: sessions.size, cap: MAX_SESSIONS }, 'session_cap_reached_evicting_lru');
+      evictOldestSession();
+    }
+
     const newId = randomUUID();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => newId,
@@ -172,8 +209,25 @@ app.post('/mcp', bearerAuth, handleMcp);
 app.get('/mcp', bearerAuth, handleMcp);
 app.delete('/mcp', bearerAuth, handleMcp);
 
-app.use((req, res) => {
-  res.status(404).json({ error: 'not_found', path: req.path });
+app.use((_req, res) => {
+  res.status(404).json({ error: 'not_found' });
+});
+
+// Top-level error handler. Catches body-parser errors (PayloadTooLargeError,
+// invalid JSON, etc.) and any other unhandled middleware error. Returns a
+// generic JSON message instead of Express's default HTML stack trace.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, _next: express.NextFunction) => {
+  if (res.headersSent) return;
+  const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;
+  log.error({ err, status }, 'unhandled_express_error');
+  if (status === 413) {
+    res.status(413).json({ error: 'payload_too_large' });
+  } else if (err.type === 'entity.parse.failed') {
+    res.status(400).json({ error: 'invalid_json' });
+  } else {
+    res.status(status).json({ error: 'internal_error' });
+  }
 });
 
 app.listen(PORT, () => {
