@@ -20,7 +20,10 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Build
+      - name: Lint (deploy gate)
+        run: npm run lint
+
+      - name: Typecheck + build (deploy gate)
         run: npm run build
 
       - name: Stage publish artifact
