@@ -81,6 +81,31 @@ function buildOptions(args: {
   return undefined;
 }
 
+/**
+ * Map user-friendly MCP field type aliases to Uplup's canonical document types.
+ * The form builder + public renderer only handle canonical types (camelCase Uplup
+ * convention). Aliases like `radio` or `text` are accepted for ergonomic input
+ * but must be translated before persisting.
+ */
+const TYPE_ALIASES: Record<string, string> = {
+  radio: 'multipleChoice',
+  multiselect: 'multiSelect',
+  select: 'dropdown',
+  text: 'shortAnswer',
+  textarea: 'longAnswer',
+  date: 'dateTime',
+  datetime: 'dateTime',
+  time: 'Time',
+  rating: 'starRating',
+  url: 'urlInput',
+  file: 'fileUpload',
+  scale: 'likertScale',
+};
+
+function canonicalType(type: string): string {
+  return TYPE_ALIASES[type] ?? type;
+}
+
 function buildQuizConfig(args: {
   questionType?: 'scored' | 'personality' | 'ungraded';
   points?: number;
@@ -174,7 +199,7 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         }).optional(),
       },
     },
-    async ({ form_id, label, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
+    async ({ form_id, type, label, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
       const richOptions = buildOptions({
         options,
         optionObjects: option_objects,
@@ -189,10 +214,11 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         hint,
         partialCredit: partial_credit,
       });
-      // Uplup's form document stores question text in `content`, not `label`.
-      // The frontend builder + public renderer both read `field.content`.
+      // Uplup's form document stores question text in `content`, not `label`,
+      // and uses canonical type names (e.g. `multipleChoice`, not `radio`).
       const body: Record<string, unknown> = {
         ...rest,
+        type: canonicalType(type),
         ...(label !== undefined ? { content: label, label } : {}),
         ...(richOptions ? { options: richOptions } : {}),
         ...(quizConfig ? { quizConfig, points: quizConfig.points } : {}),
