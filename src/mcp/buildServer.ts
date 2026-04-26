@@ -8,6 +8,7 @@ import { registerQuizTools } from '../tools/quiz.js';
 import { registerWebhooksTools } from '../tools/webhooks.js';
 import { registerAccountTools } from '../tools/account.js';
 import { registerDesignTools } from '../tools/design.js';
+import { registerPagesTools } from '../tools/pages.js';
 import { registerFormResources } from '../resources/forms.js';
 import { registerTemplateResources } from '../resources/templates.js';
 import { registerPrompts } from '../prompts/index.js';
@@ -45,6 +46,7 @@ export function buildMcpServer(bearerToken: string): McpServer {
   registerWebhooksTools(server, api);
   registerAccountTools(server, api);
   registerDesignTools(server, api);
+  registerPagesTools(server, api);
 
   registerFormResources(server, api);
   registerTemplateResources(server);
