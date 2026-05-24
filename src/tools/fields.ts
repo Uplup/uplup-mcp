@@ -106,6 +106,32 @@ function canonicalType(type: string): string {
   return TYPE_ALIASES[type] ?? type;
 }
 
+/**
+ * Derive a canonical fieldName from a free-form label. Used for hidden fields
+ * where the label IS the URL-param key (e.g. label="utm_source") but the
+ * canonical `fieldName` slot is still empty. Public-form pre-fill matches
+ * URL params against fieldName first, so leaving it null silently breaks
+ * the use case — even though the frontend has a label fallback for hidden
+ * fields specifically, downstream consumers (CSV export, webhook payloads,
+ * KIT/Zapier integrations) all read fieldName directly, so populating it
+ * here keeps the data model clean at the source.
+ *
+ * Mirror of the normalisation in uplup-frontend/utils/urlParamPrefill.ts:
+ *   "First Name" / "first-name" / "firstName" all become "first_name".
+ */
+function deriveFieldNameFromLabel(label: string | undefined): string | undefined {
+  if (!label) return undefined;
+  const cleaned = label
+    .trim()
+    .toLowerCase()
+    // Insert underscore between camelCase boundaries: firstName -> first_name.
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    // Collapse anything non-alphanumeric to underscore.
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return cleaned || undefined;
+}
+
 function buildQuizConfig(args: {
   questionType?: 'scored' | 'personality' | 'ungraded';
   points?: number;
@@ -157,11 +183,13 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
     {
       title: 'Create field',
       description:
-        'Append a new field to the form. Choose a field type and provide a label. For select/radio/checkbox/dropdown, supply either `options` (simple labels, with optional `correct_answer` for quizzes) or `option_objects` (full control over isCorrect/points/personalityScore per option). For scored quizzes set `correct_answer` and `points`. For personality quizzes use `option_objects` with `personalityScore`.',
+        'Append a new field to the form. Choose a field type and provide a label. For select/radio/checkbox/dropdown, supply either `options` (simple labels, with optional `correct_answer` for quizzes) or `option_objects` (full control over isCorrect/points/personalityScore per option). For scored quizzes set `correct_answer` and `points`. For personality quizzes use `option_objects` with `personalityScore`. For HIDDEN fields, the `label` doubles as the URL-param key: a hidden field with label "utm_source" will pre-fill from `?utm_source=...` when a participant lands on the form. Pass `field_name` explicitly if you need a different key from the label.',
       inputSchema: {
         form_id: z.string().min(1),
         type: FieldType,
         label: z.string().min(1).max(500),
+        field_name: z.string().min(1).max(120).optional()
+          .describe('Canonical key used for URL-param pre-fill, CSV export, and webhook payloads. For hidden fields, defaults to a normalised version of `label` if omitted.'),
         required: z.boolean().optional(),
         placeholder: z.string().max(255).optional(),
         description: z.string().max(1000).optional(),
@@ -199,7 +227,7 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         }).optional(),
       },
     },
-    async ({ form_id, type, label, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
+    async ({ form_id, type, label, field_name, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
       const richOptions = buildOptions({
         options,
         optionObjects: option_objects,
@@ -214,12 +242,21 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         hint,
         partialCredit: partial_credit,
       });
+      const finalType = canonicalType(type);
+      // Auto-derive fieldName for hidden fields when the caller didn't supply
+      // one — the label IS the URL-param key in that case (e.g. label="email"
+      // matches ?email=...). Other field types only set fieldName when the
+      // caller passes it explicitly, to keep the canonical-key column out of
+      // every author's way for normal questions.
+      const resolvedFieldName =
+        field_name ?? (finalType === 'hidden' ? deriveFieldNameFromLabel(label) : undefined);
       // Uplup's form document stores question text in `content`, not `label`,
       // and uses canonical type names (e.g. `multipleChoice`, not `radio`).
       const body: Record<string, unknown> = {
         ...rest,
-        type: canonicalType(type),
+        type: finalType,
         ...(label !== undefined ? { content: label, label } : {}),
+        ...(resolvedFieldName ? { fieldName: resolvedFieldName, field_name: resolvedFieldName } : {}),
         ...(richOptions ? { options: richOptions } : {}),
         ...(quizConfig ? { quizConfig, points: quizConfig.points } : {}),
         ...(conditional_logic
@@ -252,6 +289,8 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         form_id: z.string().min(1),
         field_id: z.string().min(1),
         label: z.string().min(1).max(500).optional(),
+        field_name: z.string().min(1).max(120).optional()
+          .describe('Canonical key used for URL-param pre-fill, CSV export, and webhook payloads.'),
         required: z.boolean().optional(),
         placeholder: z.string().max(255).optional(),
         description: z.string().max(1000).optional(),
@@ -274,7 +313,7 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
         }).optional(),
       },
     },
-    async ({ form_id, field_id, label, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
+    async ({ form_id, field_id, label, field_name, options, option_objects, correct_answer, points, question_type, explanation, hint, partial_credit, conditional_logic, ...rest }) => {
       const richOptions = buildOptions({
         options,
         optionObjects: option_objects,
@@ -292,6 +331,7 @@ export function registerFieldsTools(server: McpServer, api: UplupApiClient): voi
       const body: Record<string, unknown> = {
         ...rest,
         ...(label !== undefined ? { content: label, label } : {}),
+        ...(field_name !== undefined ? { fieldName: field_name, field_name } : {}),
         ...(richOptions ? { options: richOptions } : {}),
         ...(quizConfig ? { quizConfig, points: quizConfig.points } : {}),
         ...(conditional_logic
