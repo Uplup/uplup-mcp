@@ -9,7 +9,10 @@ declare module 'express-serve-static-core' {
 }
 
 const BEARER_RE = /^Bearer\s+(.+)$/i;
-const TOKEN_RE = /^uplup_(at|live|test)_[a-f0-9]{32,64}$/;
+// Mirrors the upstream token shapes exactly:
+//   OAuth access tokens  uplup_at_<64 hex>
+//   API keys             uplup_live_<32 hex> | uplup_test_<32 hex>
+const TOKEN_RE = /^(?:uplup_at_[a-f0-9]{64}|uplup_(?:live|test)_[a-f0-9]{32})$/;
 
 // Token validity is verified upstream once and cached for this long. 60s is
 // enough to amortize the cost across a chat-burst of tool calls without
@@ -18,6 +21,12 @@ const TOKEN_RE = /^uplup_(at|live|test)_[a-f0-9]{32,64}$/;
 const TOKEN_CACHE_TTL_MS = 60_000;
 const TOKEN_CACHE_MAX = 10_000;
 const tokenValidUntil = new Map<string, number>();
+
+// Negative cache: a token upstream rejected is answered 401 locally for this
+// long, so a client (or attacker) replaying a bad token does not turn every
+// /mcp request into a call to api.uplup.com.
+const TOKEN_REJECT_TTL_MS = 60_000;
+const tokenRejectedUntil = new Map<string, number>();
 
 const UPLUP_API_BASE_URL =
   process.env.UPLUP_API_BASE_URL?.replace(/\/+$/, '') ?? 'https://api.uplup.com';
@@ -31,16 +40,21 @@ function challengeHeader(error: 'invalid_token' | 'expired_token' = 'invalid_tok
   return `Bearer resource_metadata="${publicResourceMetadataUrl()}", error="${error}"`;
 }
 
-function pruneCacheIfFull(): void {
-  if (tokenValidUntil.size < TOKEN_CACHE_MAX) return;
+function pruneCacheIfFull(cache: Map<string, number>): void {
+  if (cache.size < TOKEN_CACHE_MAX) return;
   // Drop the oldest 10% by insertion order (Map iteration order is insertion
   // order). Cheaper than tracking LRU for a value that's just a TTL.
   const dropCount = Math.ceil(TOKEN_CACHE_MAX / 10);
   let dropped = 0;
-  for (const k of tokenValidUntil.keys()) {
-    tokenValidUntil.delete(k);
+  for (const k of cache.keys()) {
+    cache.delete(k);
     if (++dropped >= dropCount) break;
   }
+}
+
+function rejectUnauthorized(res: Response, description: string, error: 'invalid_token' | 'expired_token'): void {
+  res.setHeader('WWW-Authenticate', challengeHeader(error));
+  res.status(401).json({ error: 'invalid_token', error_description: description });
 }
 
 /**
@@ -66,11 +80,12 @@ async function verifyTokenUpstream(token: string): Promise<boolean> {
 
 /**
  * Extract, shape-validate, and verify the Bearer token. Verification result
- * is cached so a chat burst doesn't repeatedly hit /account.
+ * is cached so a chat burst doesn't repeatedly hit /account, and a rejection
+ * is cached so a replayed bad token is refused without an upstream call.
  *
  * On a fresh token (or one whose cached validity has lapsed), we make one
  * upstream call. If the API rejects it, we respond HTTP 401 with a
- * WWW-Authenticate header per RFC 6750 / RFC 9728 — that's the signal the
+ * WWW-Authenticate header per RFC 6750 / RFC 9728, which is the signal the
  * MCP client SDK uses to refresh tokens via the OAuth refresh_token grant
  * and retry transparently.
  */
@@ -84,31 +99,35 @@ export function bearerAuth(req: Request, res: Response, next: NextFunction): voi
   }
   const token = m[1].trim();
   if (!TOKEN_RE.test(token)) {
-    res.setHeader('WWW-Authenticate', challengeHeader());
-    res
-      .status(401)
-      .json({ error: 'invalid_token', error_description: 'Token format not recognized.' });
+    rejectUnauthorized(res, 'Token format not recognized.', 'invalid_token');
     return;
   }
 
+  const now = Date.now();
+
   const cachedExpiry = tokenValidUntil.get(token);
-  if (cachedExpiry && cachedExpiry > Date.now()) {
+  if (cachedExpiry && cachedExpiry > now) {
     req.uplupToken = token;
     next();
+    return;
+  }
+
+  const rejectedUntil = tokenRejectedUntil.get(token);
+  if (rejectedUntil && rejectedUntil > now) {
+    rejectUnauthorized(res, 'Upstream rejected the access token.', 'expired_token');
     return;
   }
 
   void verifyTokenUpstream(token).then((valid) => {
     if (!valid) {
       tokenValidUntil.delete(token);
-      res.setHeader('WWW-Authenticate', challengeHeader('expired_token'));
-      res.status(401).json({
-        error: 'invalid_token',
-        error_description: 'Upstream rejected the access token.',
-      });
+      pruneCacheIfFull(tokenRejectedUntil);
+      tokenRejectedUntil.set(token, Date.now() + TOKEN_REJECT_TTL_MS);
+      rejectUnauthorized(res, 'Upstream rejected the access token.', 'expired_token');
       return;
     }
-    pruneCacheIfFull();
+    tokenRejectedUntil.delete(token);
+    pruneCacheIfFull(tokenValidUntil);
     tokenValidUntil.set(token, Date.now() + TOKEN_CACHE_TTL_MS);
     req.uplupToken = token;
     next();
@@ -117,7 +136,7 @@ export function bearerAuth(req: Request, res: Response, next: NextFunction): voi
 
 /**
  * Drop a token's cached validity so the next request re-verifies. Tools that
- * encounter an upstream 401 mid-session call this — that way a token revoked
+ * encounter an upstream 401 mid-session call this; that way a token revoked
  * mid-burst is caught on the very next request instead of waiting up to 60s.
  */
 export function invalidateTokenCache(token: string): void {

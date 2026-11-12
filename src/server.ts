@@ -6,15 +6,19 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { buildMcpServer } from './mcp/buildServer.js';
 import { bearerAuth, publicResourceMetadataUrl } from './auth/bearer.js';
 import { log } from './util/log.js';
+import { SERVER_NAME, SERVER_VERSION } from './util/version.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const MCP_PUBLIC_URL = process.env.MCP_PUBLIC_URL ?? 'https://mcp.uplup.com';
 const UPLUP_API_BASE_URL = process.env.UPLUP_API_BASE_URL ?? 'https://api.uplup.com';
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes idle
 const SESSION_HEADER = 'mcp-session-id';
-// Hard cap on simultaneous sessions to bound memory under abuse. At ~5MB per
-// session this caps memory growth at roughly 25GB before LRU eviction kicks in.
-const MAX_SESSIONS = 5000;
+// Hard cap on simultaneous sessions to bound memory under abuse. PM2 restarts
+// the process at 500M (max_memory_restart in ecosystem.config.cjs). Each
+// session holds a transport plus a fully registered McpServer, roughly 1MB,
+// so 400 sessions keeps the session pool well inside that ceiling with room
+// for the rest of the heap before LRU eviction kicks in.
+const MAX_SESSIONS = 400;
 
 interface Session {
   transport: StreamableHTTPServerTransport;
@@ -62,27 +66,37 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '4mb' }));
 
 // DNS rebinding protection: validate Origin header for browser-originated calls.
+// Compare the hostname (no port) exactly. WHATWG URL keeps the brackets on an
+// IPv6 hostname ("[::1]"), so strip them before comparing.
+const ALLOWED_ORIGIN_HOST = new URL(MCP_PUBLIC_URL).hostname;
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+function originHostname(origin: string): string | null {
+  try {
+    return new URL(origin).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 app.use((req, res, next) => {
   const origin = req.header('origin');
   if (origin) {
-    let host: string;
-    try {
-      host = new URL(origin).host;
-    } catch {
+    const hostname = originHostname(origin);
+    if (!hostname) {
       res.status(400).json({ error: 'invalid_origin' });
       return;
     }
-    const allowed = new URL(MCP_PUBLIC_URL).host;
-    const isLocal = host === 'localhost' || host.startsWith('127.0.0.1') || host.endsWith('.localhost');
+    const isLocal = LOOPBACK_HOSTS.has(hostname) || hostname.endsWith('.localhost');
     const isAllowedHost =
-      host === allowed ||
-      host === 'claude.ai' ||
-      host.endsWith('.claude.ai') ||
-      host === 'chat.openai.com' ||
-      host === 'chatgpt.com' ||
-      host.endsWith('.chatgpt.com') ||
-      host === 'cursor.sh' ||
-      host.endsWith('.cursor.sh');
+      hostname === ALLOWED_ORIGIN_HOST ||
+      hostname === 'claude.ai' ||
+      hostname.endsWith('.claude.ai') ||
+      hostname === 'chat.openai.com' ||
+      hostname === 'chatgpt.com' ||
+      hostname.endsWith('.chatgpt.com') ||
+      hostname === 'cursor.sh' ||
+      hostname.endsWith('.cursor.sh');
     if (!isLocal && !isAllowedHost) {
       res.status(403).json({ error: 'origin_not_allowed', origin });
       return;
@@ -91,8 +105,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Per-IP token bucket. Buckets are pruned every 5 minutes to bound memory
-// growth from IP-rotation attacks.
+// Per-IP token bucket. Runs as Express middleware BEFORE bearerAuth so that
+// unauthenticated traffic (bad or missing tokens) is throttled too and cannot
+// turn into a stream of upstream verification calls. Buckets are pruned every
+// 5 minutes to bound memory growth from IP-rotation attacks.
+//
+// `trust proxy` is 1, which assumes exactly one reverse proxy (Apache) in
+// front of Node. Behind Cloudflare the client IP would be the edge IP; set
+// trust proxy accordingly (or key on CF-Connecting-IP) before putting the
+// service behind it, otherwise the limiter would throttle whole edge POPs.
 const buckets = new Map<string, { tokens: number; last: number }>();
 const RATE_LIMIT = 120;
 const RATE_REFILL_PER_SEC = 2;
@@ -121,8 +142,17 @@ function pruneIdleBuckets(): void {
 }
 setInterval(pruneIdleBuckets, 60_000).unref();
 
+function rateLimitMiddleware(req: Request, res: Response, next: express.NextFunction): void {
+  const ip = req.ip ?? 'unknown';
+  if (!rateLimit(ip)) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  next();
+}
+
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', server: 'uplup-mcp', version: '0.1.0', sessions: sessions.size });
+  res.json({ status: 'ok', server: SERVER_NAME, version: SERVER_VERSION, sessions: sessions.size });
 });
 
 app.get('/.well-known/oauth-protected-resource', (_req, res) => {
@@ -137,12 +167,6 @@ app.get('/.well-known/oauth-protected-resource', (_req, res) => {
 });
 
 async function handleMcp(req: Request, res: Response): Promise<void> {
-  const ip = req.ip ?? 'unknown';
-  if (!rateLimit(ip)) {
-    res.status(429).json({ error: 'rate_limited' });
-    return;
-  }
-
   const token = req.uplupToken;
   if (!token) {
     res.status(500).json({ error: 'auth_middleware_misconfigured' });
@@ -205,9 +229,10 @@ async function handleMcp(req: Request, res: Response): Promise<void> {
   }
 }
 
-app.post('/mcp', bearerAuth, handleMcp);
-app.get('/mcp', bearerAuth, handleMcp);
-app.delete('/mcp', bearerAuth, handleMcp);
+// Order matters: rate limit first, then auth, then the MCP transport.
+app.post('/mcp', rateLimitMiddleware, bearerAuth, handleMcp);
+app.get('/mcp', rateLimitMiddleware, bearerAuth, handleMcp);
+app.delete('/mcp', rateLimitMiddleware, bearerAuth, handleMcp);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'not_found' });
@@ -216,7 +241,6 @@ app.use((_req, res) => {
 // Top-level error handler. Catches body-parser errors (PayloadTooLargeError,
 // invalid JSON, etc.) and any other unhandled middleware error. Returns a
 // generic JSON message instead of Express's default HTML stack trace.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, _next: express.NextFunction) => {
   if (res.headersSent) return;
   const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;

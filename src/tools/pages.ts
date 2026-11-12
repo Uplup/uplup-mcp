@@ -30,8 +30,20 @@ async function readDocument(api: UplupApiClient, formId: string): Promise<FormDo
   return res?.data?.document ?? {};
 }
 
+/**
+ * Write the whole document back under `document`. Upstream replaces the stored
+ * v3 document with it and requires a `pages` array, so one is guaranteed here.
+ */
 async function writeDocument(api: UplupApiClient, formId: string, doc: FormDocument): Promise<unknown> {
+  if (!Array.isArray(doc.pages)) doc.pages = [];
   return api.patch(`/api/v1/forms/${encodeURIComponent(formId)}`, { document: doc });
+}
+
+/** Question text lives in `content`; `label` is a legacy fallback. */
+function fieldText(f: Record<string, unknown>): string | undefined {
+  if (typeof f.content === 'string' && f.content.trim()) return f.content;
+  if (typeof f.label === 'string' && f.label.trim()) return f.label;
+  return undefined;
 }
 
 export function registerPagesTools(server: McpServer, api: UplupApiClient): void {
@@ -194,7 +206,7 @@ export function registerPagesTools(server: McpServer, api: UplupApiClient): void
     {
       title: 'Summarise conditional logic',
       description:
-        'Walks the form document and returns every field that has conditional show/hide/require logic configured, plus any page-level routing rules.',
+        'Walks the form document and returns every field that has conditional show/hide/require logic configured (page, field id, question text, match mode and conditions).',
       inputSchema: { form_id: z.string().min(1) },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -220,7 +232,7 @@ export function registerPagesTools(server: McpServer, api: UplupApiClient): void
               fieldRules.push({
                 page_id: page.id,
                 field_id: String(f.id),
-                field_label: typeof f.label === 'string' ? f.label : undefined,
+                field_label: fieldText(f),
                 enabled: true,
                 logic: cl.logic ?? 'all',
                 condition_count: Array.isArray(cl.conditions) ? cl.conditions.length : 0,

@@ -3,8 +3,8 @@ import { UplupApiClient } from '../api/client.js';
 
 /**
  * Two resource templates:
- *   uplup://forms/{form_id}                 — form definition JSON
- *   uplup://forms/{form_id}/submissions     — paginated submissions JSON
+ *   uplup://forms/{form_id}                 form definition JSON
+ *   uplup://forms/{form_id}/submissions     paginated submissions JSON
  *
  * Listing returns the user's forms (one resource per form).
  */
@@ -13,15 +13,22 @@ export function registerFormResources(server: McpServer, api: UplupApiClient): v
     'form',
     new ResourceTemplate('uplup://forms/{form_id}', {
       list: async () => {
-        const data = (await api.get<{ forms?: Array<{ id: string; title?: string }> }>('/api/v1/forms?limit=100')) ?? {};
-        const forms = data.forms ?? [];
-        return {
-          resources: forms.map((f) => ({
-            uri: `uplup://forms/${encodeURIComponent(f.id)}`,
-            name: f.title ?? f.id,
+        // GET /api/v1/forms answers { success, data: [{ form_id, title, ... }], total, limit, offset }.
+        const res = await api.get<{ data?: Array<{ form_id?: string; id?: string; title?: string }> }>(
+          '/api/v1/forms?limit=100',
+        );
+        const forms = Array.isArray(res?.data) ? res.data : [];
+        const resources = [];
+        for (const f of forms) {
+          const id = f.form_id ?? f.id;
+          if (!id) continue;
+          resources.push({
+            uri: `uplup://forms/${encodeURIComponent(id)}`,
+            name: f.title ?? id,
             mimeType: 'application/json',
-          })),
-        };
+          });
+        }
+        return { resources };
       },
     }),
     {

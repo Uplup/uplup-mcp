@@ -6,7 +6,7 @@ export function registerPrompts(server: McpServer): void {
     'build_quiz',
     {
       title: 'Build a quiz',
-      description: 'Walks through creating a multi-question quiz with scoring and outcomes.',
+      description: 'Walks through creating a multi-question scored quiz with a pass mark and results display.',
       argsSchema: {
         topic: z.string().describe('Quiz topic, e.g. "Greek mythology" or "fitness goals".'),
         question_count: z.string().optional().describe('Approximate number of questions (default 5).'),
@@ -24,9 +24,9 @@ export function registerPrompts(server: McpServer): void {
               (audience ? ` for ${audience}` : '') +
               `.\n\nSteps:\n` +
               `1. Call create_form with content_type="quiz" and a clear title.\n` +
-              `2. For each question call create_field with type="radio" and 3-4 options.\n` +
-              `3. Call update_quiz_settings to set passing_score and outcomes (e.g. Beginner / Intermediate / Expert).\n` +
-              `4. Show the user the form url and offer to publish_form.`,
+              `2. For each question call create_field with type="multipleChoice", 3-4 options, correct_answer set to the right option label, and points.\n` +
+              `3. Call update_quiz_settings with scoringMode="percentage", passingScore (e.g. 70) and passingScoreType="percentage", plus resultsDisplay (showScore, showCorrectAnswers="after_submit", showExplanations).\n` +
+              `4. Show the user the form id and offer to publish_form.`,
           },
         },
       ],
@@ -51,7 +51,7 @@ export function registerPrompts(server: McpServer): void {
             text:
               `Build a lead-capture form for: ${purpose}.\n\nSteps:\n` +
               `1. Call create_form with content_type="form" and a clear title.\n` +
-              `2. Add fields: full name (text, required), email (email, required), phone (phone, optional), and one tailored open-ended question relevant to the purpose.\n` +
+              `2. Add fields with create_field: full name (shortAnswer, required), email (email, required), phone (phone, optional), and one tailored open-ended question (longAnswer) relevant to the purpose.\n` +
               `3. Call update_form_design to set primary_color matching the user's brand if they mentioned one.\n` +
               `4. Offer publish_form once the user is happy.`,
           },
@@ -67,21 +67,21 @@ export function registerPrompts(server: McpServer): void {
       description: 'Summarize trends across recent submissions on a form.',
       argsSchema: {
         form_id: z.string().describe('Form id from list_forms.'),
-        last_n_days: z.string().optional().describe('Look back N days (default 30).'),
+        period: z.string().optional().describe('Analytics window: 7d, 30d, 90d or all (default 30d).'),
       },
     },
-    ({ form_id, last_n_days }) => ({
+    ({ form_id, period }) => ({
       messages: [
         {
           role: 'user',
           content: {
             type: 'text',
             text:
-              `Summarize submission trends for form ${form_id} over the last ${last_n_days ?? 30} days.\n\nSteps:\n` +
-              `1. Call get_form_analytics, get_submission_analytics, get_geography_analytics for the date range.\n` +
-              `2. Call list_submissions (limit 100) to sample recent answers.\n` +
-              `3. Identify: total submissions, conversion rate trend, top countries, common open-ended themes, drop-off fields.\n` +
-              `4. Surface 3-5 actionable insights (e.g. "field X causes 40% drop-off").`,
+              `Summarize submission trends for form ${form_id} over the ${period ?? '30d'} period.\n\nSteps:\n` +
+              `1. Call get_form_analytics (period="${period ?? '30d'}") for totals and conversion rate, get_submission_analytics (same period, group_by="day" or "week") for the trend, get_geography_analytics for countries, and get_performance_analytics for hour-of-day and weekday patterns.\n` +
+              `2. Call list_submissions (limit 100, sort="newest") to sample recent answers.\n` +
+              `3. Identify: total submissions, conversion rate, trend direction, top countries, busiest hours/days, common open-ended themes.\n` +
+              `4. Surface 3-5 actionable insights grounded in those numbers.`,
           },
         },
       ],
@@ -92,7 +92,7 @@ export function registerPrompts(server: McpServer): void {
     'build_survey',
     {
       title: 'Build a survey',
-      description: 'Walks through creating a survey with rating scales, ranking, NPS, and open-ended fields.',
+      description: 'Walks through creating a survey with rating scales, NPS, and open-ended fields.',
       argsSchema: {
         topic: z.string().describe('What the survey is measuring.'),
         question_count: z.string().optional().describe('Approximate number of questions (default 8).'),
@@ -109,11 +109,11 @@ export function registerPrompts(server: McpServer): void {
               `Build a ${question_count ?? 8}-question survey about "${topic}".\n\nSteps:\n` +
               `1. Call create_form with content_type="form" and a clear title.\n` +
               `2. Add a mix of question types via create_field:\n` +
-              `   - 1-2 rating fields (type="rating") for satisfaction / agreement\n` +
-              `   - 2-3 multipleChoice or radio for segmentation\n` +
+              `   - 1-2 starRating or likertScale fields for satisfaction / agreement\n` +
+              `   - 2-3 multipleChoice fields for segmentation\n` +
               `   - 1 longAnswer for open-ended feedback\n` +
-              (include_nps !== 'false' ? `   - 1 scale field (0-10) for NPS\n` : '') +
-              `3. Use update_form_design to apply a theme that matches a survey context (clean, neutral colours).\n` +
+              (include_nps !== 'false' ? `   - 1 npsScore field (0-10) for Net Promoter Score\n` : '') +
+              `3. Use update_form_design to apply a clean, neutral look (primary_color, font_family).\n` +
               `4. Offer publish_form once the user reviews.`,
           },
         },
@@ -124,8 +124,8 @@ export function registerPrompts(server: McpServer): void {
   server.registerPrompt(
     'manage_quiz_scoring',
     {
-      title: 'Configure quiz scoring + outcomes',
-      description: 'Walk a user through setting up scoring rules, outcomes, randomization, and retake policy on an existing quiz.',
+      title: 'Configure quiz scoring and results',
+      description: 'Walk a user through scoring rules, pass mark, retakes, randomization and results display on an existing quiz.',
       argsSchema: {
         form_id: z.string().describe('Quiz form id.'),
       },
@@ -140,13 +140,15 @@ export function registerPrompts(server: McpServer): void {
               `Help me configure scoring on quiz ${form_id}.\n\nSteps:\n` +
               `1. Call get_quiz_settings and list_fields to inspect current state.\n` +
               `2. Walk through the user's preferences for:\n` +
-              `   - scoring_method (points / percentage / pass_fail / personality)\n` +
-              `   - passing_score and outcome bands\n` +
-              `   - retake_policy (allow_retakes, max_attempts, cooldown)\n` +
-              `   - question_behavior (randomize_questions, randomize_answers, instant_feedback)\n` +
-              `   - results_display (show_score, show_correct_answers timing)\n` +
-              `3. For each question, confirm the correct_answer + points using update_field.\n` +
-              `4. Call update_quiz_settings to apply the chosen rules.\n` +
+              `   - scoringMode (points / percentage / pass_fail / personality)\n` +
+              `   - passingScore and passingScoreType (percentage / points)\n` +
+              `   - retakePolicy (allowRetakes, maxAttempts, cooldownPeriod in minutes, keepBestScore)\n` +
+              `   - questionBehavior (randomizeQuestions, randomizeAnswers, instantFeedback, showProgressBar)\n` +
+              `   - resultsDisplay (showScore, showPercentage, showCorrectAnswers: always / after_submit / never, showExplanations)\n` +
+              `   - timing (totalTimeLimit in minutes, perQuestionTimeLimit in seconds)\n` +
+              `   - for personality quizzes: personalityTypes and personalitySettings\n` +
+              `3. For each question, confirm the correct_answer (or accepted_answers for text questions) and points using update_field.\n` +
+              `4. Call update_quiz_settings with only the camelCase keys that should change.\n` +
               `5. Recommend publish_form once configured.`,
           },
         },
@@ -158,10 +160,10 @@ export function registerPrompts(server: McpServer): void {
     'analyze_responses_by_field',
     {
       title: 'Per-field response breakdown',
-      description: 'Drop-off, completion time, and answer distribution per field — surfaces which questions are hurting conversion.',
+      description: 'Answer distribution and response rate per field, computed from a sample of submissions, to find questions worth rewording or dropping.',
       argsSchema: {
         form_id: z.string().describe('Form id from list_forms.'),
-        sample_size: z.string().optional().describe('Submissions to sample (default 200).'),
+        sample_size: z.string().optional().describe('Submissions to sample, up to 100 per call (default 100).'),
       },
     },
     ({ form_id, sample_size }) => ({
@@ -173,11 +175,12 @@ export function registerPrompts(server: McpServer): void {
             text:
               `Diagnose form ${form_id} field-by-field.\n\nSteps:\n` +
               `1. Call list_fields to get the question list.\n` +
-              `2. Call get_performance_analytics to see drop-off rate per field.\n` +
-              `3. Call list_submissions with limit ${sample_size ?? 200} to sample answers.\n` +
-              `4. For each field compute: response rate, average answer length (text), top values (choice).\n` +
-              `5. Rank questions by drop-off impact and propose 3 specific edits ` +
-              `(rewording, making optional, adding helper text, splitting into multiple fields).`,
+              `2. Call get_form_analytics and get_submission_analytics for overall conversion and the recent trend.\n` +
+              `3. Call list_submissions with limit ${sample_size ?? 100} (paginate with offset for more) to sample answers.\n` +
+              `4. For each field compute from the sample: response rate (how often it was answered), average answer length (text), top values (choice).\n` +
+              `5. Rank questions by low response rate and propose 3 specific edits ` +
+              `(rewording, making optional, adding helper text, splitting into multiple fields). ` +
+              `Note: the API does not report per-field drop-off, so base the diagnosis on answered vs. blank values in the sample.`,
           },
         },
       ],

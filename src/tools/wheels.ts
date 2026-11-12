@@ -335,4 +335,80 @@ export function registerWheelsTools(server: McpServer, api: UplupApiClient): voi
         api.get(`/api/v1/wheels/${encodeURIComponent(wheel_id)}/share`),
       ),
   );
+
+  server.registerTool(
+    'update_wheel_share',
+    {
+      title: 'Set wheel visibility',
+      description: 'Make a wheel public (anyone with the share URL can open it) or private again.',
+      inputSchema: {
+        wheel_id: z.string().min(1),
+        is_public: z.boolean(),
+      },
+      annotations: { idempotentHint: true },
+    },
+    async ({ wheel_id, is_public }) =>
+      runTool('update_wheel_share', '/api/v1/wheels/{id}/share', () =>
+        api.put(`/api/v1/wheels/${encodeURIComponent(wheel_id)}/share`, { is_public }),
+      ),
+  );
+
+  server.registerTool(
+    'archive_wheel',
+    {
+      title: 'Archive wheel',
+      description: 'Archive a wheel so it no longer appears in list_wheels. Upstream marks it deleted the same way delete_wheel does; restore_wheel brings it back.',
+      inputSchema: { wheel_id: z.string().min(1) },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    async ({ wheel_id }) =>
+      runTool('archive_wheel', '/api/v1/wheels/{id}/archive', () =>
+        api.post(`/api/v1/wheels/${encodeURIComponent(wheel_id)}/archive`, {}),
+      ),
+  );
+
+  server.registerTool(
+    'get_wheel_background',
+    {
+      title: 'Get wheel background image',
+      description: 'Returns the wheel\'s background_image URL (null when none is set).',
+      inputSchema: { wheel_id: z.string().min(1) },
+      annotations: READ,
+    },
+    async ({ wheel_id }) =>
+      runTool('get_wheel_background', '/api/v1/wheels/{id}/background', () =>
+        api.get(`/api/v1/wheels/${encodeURIComponent(wheel_id)}/background`),
+      ),
+  );
+
+  server.registerTool(
+    'set_wheel_background',
+    {
+      title: 'Set wheel background image',
+      description: 'Set the wheel\'s background image from a URL. Use remove_wheel_background to clear it.',
+      inputSchema: {
+        wheel_id: z.string().min(1),
+        background_image: z.string().url(),
+      },
+      annotations: { idempotentHint: true },
+    },
+    async ({ wheel_id, background_image }) =>
+      runTool('set_wheel_background', '/api/v1/wheels/{id}/background', () =>
+        api.put(`/api/v1/wheels/${encodeURIComponent(wheel_id)}/background`, { background_image }),
+      ),
+  );
+
+  server.registerTool(
+    'remove_wheel_background',
+    {
+      title: 'Remove wheel background image',
+      description: 'Clear the wheel\'s background image.',
+      inputSchema: { wheel_id: z.string().min(1) },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    async ({ wheel_id }) =>
+      runTool('remove_wheel_background', '/api/v1/wheels/{id}/background', () =>
+        api.delete(`/api/v1/wheels/${encodeURIComponent(wheel_id)}/background`),
+      ),
+  );
 }

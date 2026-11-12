@@ -1,17 +1,113 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { UplupApiClient } from '../api/client.js';
 import { runTool, qs } from '../util/tool.js';
 
-const ScoringMethod = z.enum(['points', 'percentage', 'pass_fail', 'personality', 'custom']);
-const ShowCorrectAnswers = z.enum(['never', 'after_submit', 'always']);
+/**
+ * Input keys mirror document.quiz exactly (uplup-frontend
+ * context/QuizBuilderContext.tsx QuizSettings), so what the client sends is
+ * what the builder reads. Upstream merges the provided keys into the stored
+ * settings; nothing omitted here is touched.
+ */
+const ScoringMode = z.enum(['points', 'percentage', 'pass_fail', 'personality']);
+const ShowCorrectAnswers = z.enum(['always', 'after_submit', 'never']);
+
+const Timing = z.object({
+  enabled: z.boolean().optional(),
+  totalTimeLimit: z.number().int().min(0).nullable().optional()
+    .describe('Whole-quiz time limit in MINUTES; null for none.'),
+  perQuestionTimeLimit: z.number().int().min(0).nullable().optional()
+    .describe('Per-question time limit in SECONDS; null for none.'),
+  showTimer: z.boolean().optional(),
+  autoSubmitOnTimeout: z.boolean().optional(),
+});
+
+const RetakePolicy = z.object({
+  allowRetakes: z.boolean().optional(),
+  maxAttempts: z.number().int().min(0).nullable().optional().describe('null means unlimited.'),
+  cooldownPeriod: z.number().int().min(0).nullable().optional()
+    .describe('Wait between attempts in MINUTES; null for none.'),
+  keepBestScore: z.boolean().optional(),
+});
+
+const QuestionBehavior = z.object({
+  randomizeQuestions: z.boolean().optional(),
+  randomizeAnswers: z.boolean().optional(),
+  showQuestionNumbers: z.boolean().optional(),
+  allowSkipping: z.boolean().optional(),
+  allowBackNavigation: z.boolean().optional(),
+  showProgressBar: z.boolean().optional(),
+  instantFeedback: z.boolean().optional(),
+});
+
+const ResultsDisplay = z.object({
+  showScore: z.boolean().optional(),
+  showPercentage: z.boolean().optional(),
+  showCorrectAnswers: ShowCorrectAnswers.optional(),
+  showExplanations: z.boolean().optional(),
+  showDetailedBreakdown: z.boolean().optional(),
+});
+
+const LeadCaptureField = z.object({
+  enabled: z.boolean().optional(),
+  required: z.boolean().optional(),
+  label: z.string().max(120).optional(),
+});
+
+const LeadCapture = z.object({
+  enabled: z.boolean().optional(),
+  required: z.boolean().optional().describe('When false, respondents may skip the lead form.'),
+  skipText: z.string().max(200).optional(),
+  fields: z.object({
+    name: LeadCaptureField.optional(),
+    email: LeadCaptureField.optional(),
+    phone: LeadCaptureField.optional(),
+  }).optional(),
+  heading: z.string().max(200).optional(),
+  subheading: z.string().max(300).optional(),
+  buttonText: z.string().max(100).optional(),
+  privacyText: z.string().max(500).optional(),
+  showPrivacyNote: z.boolean().optional(),
+  sendResultsEmail: z.boolean().optional(),
+});
+
+const PersonalityType = z.object({
+  id: z.string().min(1).optional().describe('Omit to have one generated; the response lists the ids.'),
+  name: z.string().min(1).max(120),
+  color: z.string().max(32).optional(),
+  image: z.string().url().nullable().optional(),
+  shortDescription: z.string().max(500).optional(),
+  fullDescription: z.string().max(5000).optional(),
+  description: z.string().max(5000).optional(),
+}).passthrough();
+
+const PersonalitySettings = z.object({
+  showBreakdown: z.boolean().optional().describe('Show percentage bars for every type on the results page.'),
+  tieBreaker: z.string().max(32).optional().describe('How ties are resolved, e.g. "first".'),
+}).passthrough();
+
+/** Recursively drop undefined values so only provided keys reach upstream. */
+function compact<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((v) => compact(v)) as unknown as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === undefined) continue;
+      out[k] = compact(v);
+    }
+    return out as T;
+  }
+  return value;
+}
 
 export function registerQuizTools(server: McpServer, api: UplupApiClient): void {
   server.registerTool(
     'get_quiz_settings',
     {
       title: 'Get quiz settings',
-      description: 'Returns scoring rules, pass/fail thresholds, outcome configuration, timing, retake policy, and results display settings for a quiz.',
+      description:
+        'Returns document.quiz for a quiz: scoringMode, passingScore, passingScoreType, timing, questionBehavior, resultsDisplay, retakePolicy, personalityTypes, personalitySettings, leadCapture and result pages.',
       inputSchema: { form_id: z.string().min(1) },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -26,143 +122,46 @@ export function registerQuizTools(server: McpServer, api: UplupApiClient): void 
     {
       title: 'Update quiz settings',
       description:
-        'Update scoring rules, pass threshold, outcomes, timing, retake policy, question behavior (randomize / progress bar / instant feedback), and how results are displayed. Only provided fields change.',
+        'Update quiz settings with the same camelCase keys the builder stores: scoringMode, passingScore, passingScoreType, timing (totalTimeLimit in minutes), retakePolicy (cooldownPeriod in minutes), questionBehavior, resultsDisplay, leadCapture, personalityTypes and personalitySettings. Upstream merges the provided keys into the existing settings, so send only what should change. Personality types without an id get one generated; the response lists the ids to use as personalityTypeId on option_objects in create_field.',
       inputSchema: {
         form_id: z.string().min(1),
-
-        // Core scoring
-        passing_score: z.number().min(0).max(100).optional(),
-        passing_score_type: z.enum(['percentage', 'absolute']).optional(),
-        scoring_method: ScoringMethod.optional(),
-
-        // Outcomes (score band → message)
-        outcomes: z
-          .array(
-            z.object({
-              name: z.string().min(1),
-              min_score: z.number().optional(),
-              max_score: z.number().optional(),
-              message: z.string().optional(),
-            }),
-          )
-          .optional(),
-
-        // Personality outcomes (for personality-mode quizzes)
-        personality_outcomes: z
-          .array(
-            z.object({
-              id: z.string().min(1),
-              title: z.string().min(1),
-              description: z.string().optional(),
-              min_score: z.number().optional(),
-              max_score: z.number().optional(),
-            }),
-          )
-          .optional(),
-
-        // Timing
-        timing: z
-          .object({
-            enabled: z.boolean().optional(),
-            show_timer: z.boolean().optional(),
-            total_time_limit_seconds: z.number().int().min(0).optional(),
-            per_question_time_limit_seconds: z.number().int().min(0).optional(),
-            auto_submit_on_timeout: z.boolean().optional(),
-          })
-          .optional(),
-
-        // Retake policy
-        retake_policy: z
-          .object({
-            allow_retakes: z.boolean().optional(),
-            max_attempts: z.number().int().min(0).nullable().optional(),
-            keep_best_score: z.boolean().optional(),
-            cooldown_period_seconds: z.number().int().min(0).nullable().optional(),
-          })
-          .optional(),
-
-        // Question behavior
-        question_behavior: z
-          .object({
-            show_progress_bar: z.boolean().optional(),
-            show_question_numbers: z.boolean().optional(),
-            randomize_questions: z.boolean().optional(),
-            randomize_answers: z.boolean().optional(),
-            allow_skipping: z.boolean().optional(),
-            instant_feedback: z.boolean().optional(),
-            allow_back_navigation: z.boolean().optional(),
-          })
-          .optional(),
-
-        // Results display
-        results_display: z
-          .object({
-            show_score: z.boolean().optional(),
-            show_percentage: z.boolean().optional(),
-            show_correct_answers: ShowCorrectAnswers.optional(),
-            show_explanations: z.boolean().optional(),
-            show_detailed_breakdown: z.boolean().optional(),
-          })
-          .optional(),
-
-        // Leaderboard
-        leaderboard_enabled: z.boolean().optional(),
+        scoringMode: ScoringMode.optional(),
+        passingScore: z.number().min(0).optional()
+          .describe('Threshold to pass, interpreted per passingScoreType.'),
+        passingScoreType: z.enum(['percentage', 'points']).optional(),
+        timing: Timing.optional(),
+        retakePolicy: RetakePolicy.optional(),
+        questionBehavior: QuestionBehavior.optional(),
+        resultsDisplay: ResultsDisplay.optional(),
+        leadCapture: LeadCapture.optional(),
+        personalityTypes: z.array(PersonalityType).optional()
+          .describe('Replaces the personality type list. Each option on a personality question references one of these ids.'),
+        personalitySettings: PersonalitySettings.optional(),
       },
     },
-    async ({ form_id, timing, retake_policy, question_behavior, results_display, leaderboard_enabled, personality_outcomes, ...rest }) => {
-      const body: Record<string, unknown> = { ...rest };
-      if (timing) {
-        body.timing = {
-          ...(timing.enabled !== undefined ? { enabled: timing.enabled } : {}),
-          ...(timing.show_timer !== undefined ? { showTimer: timing.show_timer } : {}),
-          ...(timing.total_time_limit_seconds !== undefined ? { totalTimeLimit: timing.total_time_limit_seconds } : {}),
-          ...(timing.per_question_time_limit_seconds !== undefined ? { perQuestionTimeLimit: timing.per_question_time_limit_seconds } : {}),
-          ...(timing.auto_submit_on_timeout !== undefined ? { autoSubmitOnTimeout: timing.auto_submit_on_timeout } : {}),
-        };
-      }
-      if (retake_policy) {
-        body.retakePolicy = {
-          ...(retake_policy.allow_retakes !== undefined ? { allowRetakes: retake_policy.allow_retakes } : {}),
-          ...(retake_policy.max_attempts !== undefined ? { maxAttempts: retake_policy.max_attempts } : {}),
-          ...(retake_policy.keep_best_score !== undefined ? { keepBestScore: retake_policy.keep_best_score } : {}),
-          ...(retake_policy.cooldown_period_seconds !== undefined ? { cooldownPeriod: retake_policy.cooldown_period_seconds } : {}),
-        };
-      }
-      if (question_behavior) {
-        body.questionBehavior = {
-          ...(question_behavior.show_progress_bar !== undefined ? { showProgressBar: question_behavior.show_progress_bar } : {}),
-          ...(question_behavior.show_question_numbers !== undefined ? { showQuestionNumbers: question_behavior.show_question_numbers } : {}),
-          ...(question_behavior.randomize_questions !== undefined ? { randomizeQuestions: question_behavior.randomize_questions } : {}),
-          ...(question_behavior.randomize_answers !== undefined ? { randomizeAnswers: question_behavior.randomize_answers } : {}),
-          ...(question_behavior.allow_skipping !== undefined ? { allowSkipping: question_behavior.allow_skipping } : {}),
-          ...(question_behavior.instant_feedback !== undefined ? { instantFeedback: question_behavior.instant_feedback } : {}),
-          ...(question_behavior.allow_back_navigation !== undefined ? { allowBackNavigation: question_behavior.allow_back_navigation } : {}),
-        };
-      }
-      if (results_display) {
-        body.resultsDisplay = {
-          ...(results_display.show_score !== undefined ? { showScore: results_display.show_score } : {}),
-          ...(results_display.show_percentage !== undefined ? { showPercentage: results_display.show_percentage } : {}),
-          ...(results_display.show_correct_answers !== undefined ? { showCorrectAnswers: results_display.show_correct_answers } : {}),
-          ...(results_display.show_explanations !== undefined ? { showExplanations: results_display.show_explanations } : {}),
-          ...(results_display.show_detailed_breakdown !== undefined ? { showDetailedBreakdown: results_display.show_detailed_breakdown } : {}),
-        };
-      }
-      if (leaderboard_enabled !== undefined) {
-        body.leaderboard = { enabled: leaderboard_enabled };
-      }
-      if (personality_outcomes) {
-        body.personalityResults = personality_outcomes.map((o) => ({
-          id: o.id,
-          title: o.title,
-          ...(o.description !== undefined ? { description: o.description } : {}),
-          ...(o.min_score !== undefined ? { minScore: o.min_score } : {}),
-          ...(o.max_score !== undefined ? { maxScore: o.max_score } : {}),
+    async ({ form_id, personalityTypes, ...rest }) => {
+      const body: Record<string, unknown> = compact({ ...rest });
+      let assignedTypes: Array<{ id: string; name: string }> | undefined;
+      if (personalityTypes) {
+        const withIds = personalityTypes.map((t) => ({
+          ...t,
+          id: t.id ?? `pt-${randomUUID().slice(0, 12)}`,
+          color: t.color ?? '#6366f1',
+          image: t.image ?? null,
         }));
+        body.personalityTypes = compact(withIds);
+        assignedTypes = withIds.map((t) => ({ id: t.id, name: t.name }));
       }
-      return runTool('update_quiz_settings', '/api/v1/forms/{id}/quiz/settings', () =>
-        api.patch(`/api/v1/forms/${encodeURIComponent(form_id)}/quiz/settings`, body),
-      );
+      if (Object.keys(body).length === 0) {
+        throw new Error('Nothing to update: pass at least one quiz setting.');
+      }
+      return runTool('update_quiz_settings', '/api/v1/forms/{id}/quiz/settings', async () => {
+        const result = await api.patch<Record<string, unknown>>(
+          `/api/v1/forms/${encodeURIComponent(form_id)}/quiz/settings`,
+          body,
+        );
+        return assignedTypes ? { ...result, personalityTypes: assignedTypes } : result;
+      });
     },
   );
 
@@ -170,7 +169,8 @@ export function registerQuizTools(server: McpServer, api: UplupApiClient): void 
     'get_quiz_results',
     {
       title: 'List quiz results',
-      description: 'Per-attempt quiz results: score, percentage, outcome, pass/fail.',
+      description:
+        'Per-attempt quiz results, newest first: submission_id, email, values (the answers), timestamp, country_code, score, max_score, percentage and passed. Rows hidden by the Free plan paywall carry is_hidden=true with no email or values. Pagination via limit (default 20, max 100) + offset.',
       inputSchema: {
         form_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional(),
@@ -190,10 +190,10 @@ export function registerQuizTools(server: McpServer, api: UplupApiClient): void 
     'get_quiz_leaderboard',
     {
       title: 'Quiz leaderboard',
-      description: 'Top scorers on a quiz.',
+      description: 'Top attempts on a quiz ranked by percentage score (highest first). limit 1 to 50, default 10.',
       inputSchema: {
         form_id: z.string().min(1),
-        limit: z.number().int().min(1).max(100).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },

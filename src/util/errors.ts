@@ -9,8 +9,15 @@ export interface ToolErrorContext {
 export function mapAxiosError(err: unknown, ctx: ToolErrorContext): McpError {
   if (err instanceof AxiosError) {
     const status = err.response?.status ?? 0;
-    const upstreamMessage = extractUpstreamMessage(err);
     const where = ctx.upstreamPath ? ` (${ctx.upstreamPath})` : '';
+
+    // Upstream 5xx: never forward the body. It may carry stack traces or
+    // internal detail, and it is not actionable for the client anyway.
+    if (status >= 500) {
+      return new McpError(ErrorCode.InternalError, `Uplup API error${where}, please try again.`);
+    }
+
+    const upstreamMessage = extractUpstreamMessage(err);
 
     if (status === 400) {
       return new McpError(ErrorCode.InvalidParams, `Bad request${where}: ${upstreamMessage}`);
@@ -24,7 +31,7 @@ export function mapAxiosError(err: unknown, ctx: ToolErrorContext): McpError {
     if (status === 403) {
       return new McpError(
         ErrorCode.InvalidRequest,
-        `Permission denied${where}: ${upstreamMessage}. Your plan tier may not include this feature.`,
+        `Permission denied${where}: ${upstreamMessage}. Your plan tier may not include this feature, or the token is read-only.`,
       );
     }
     if (status === 404) {
@@ -38,8 +45,9 @@ export function mapAxiosError(err: unknown, ctx: ToolErrorContext): McpError {
         `Rate limited${where}.${retryHint} ${upstreamMessage}`.trim(),
       );
     }
-    if (status >= 500) {
-      return new McpError(ErrorCode.InternalError, `Uplup API error${where}: ${upstreamMessage}`);
+    if (status === 0) {
+      // No HTTP response at all: timeout, DNS, connection reset.
+      return new McpError(ErrorCode.InternalError, `Uplup API unreachable${where}, please try again.`);
     }
     return new McpError(
       ErrorCode.InternalError,
@@ -53,6 +61,7 @@ export function mapAxiosError(err: unknown, ctx: ToolErrorContext): McpError {
   return new McpError(ErrorCode.InternalError, `${ctx.tool}: unknown error`);
 }
 
+/** Pull a human-readable message out of a 4xx body; only used for 4xx. */
 function extractUpstreamMessage(err: AxiosError): string {
   const data = err.response?.data;
   if (!data) return err.message;
