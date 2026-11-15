@@ -13,14 +13,24 @@ import { registerWheelsTools } from '../tools/wheels.js';
 import { registerFormResources } from '../resources/forms.js';
 import { registerTemplateResources } from '../resources/templates.js';
 import { registerPrompts } from '../prompts/index.js';
+import { SERVER_NAME, SERVER_VERSION } from '../util/version.js';
 
-const SERVER_NAME = 'uplup-mcp';
-const SERVER_VERSION = '0.1.0';
+const INSTRUCTIONS = [
+  'Uplup MCP exposes the connected account\'s forms, quizzes, submissions, analytics, webhooks and random name picker wheels through the Uplup public API.',
+  'Start with list_forms to discover what the user has, get_form to read a form\'s structure, and create_form followed by create_field to build new forms.',
+  'Webhooks need a Pro plan or higher, both to create a subscription and to receive deliveries, and a workspace can hold at most 25 active webhooks.',
+  'Read-only API tokens cannot call write tools; the API answers 403 "This token has read access only".',
+  'The upstream API allows 600 requests an hour per token and returns 429 with X-RateLimit-* headers when that is exceeded.',
+].join(' ');
 
 /**
- * Build a fresh McpServer wired to a specific user's API token.
- * One server per request, since the SDK ties a server to a single transport
- * and we want per-request auth isolation.
+ * Build a fresh McpServer wired to one user's API token.
+ *
+ * One server per session: the SDK ties a server to a single transport, and
+ * server.ts binds each session to the Bearer token that initialized it (a
+ * later request on the same session with a different token is rejected).
+ * Every tool call inside the session therefore runs as that token, and
+ * closing the session disposes the server and its API client together.
  */
 export function buildMcpServer(bearerToken: string): McpServer {
   const server = new McpServer(
@@ -32,8 +42,7 @@ export function buildMcpServer(bearerToken: string): McpServer {
         prompts: { listChanged: false },
         logging: {},
       },
-      instructions:
-        'Uplup MCP exposes Uplup form/quiz/wheel data. Use list_forms to discover what the user has, get_form to read structure, and create_form/create_field to build new forms. Webhook tools require Pro plan or higher.',
+      instructions: INSTRUCTIONS,
     },
   );
 

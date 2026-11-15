@@ -1,7 +1,8 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { invalidateTokenCache } from '../auth/bearer.js';
+import { SERVER_NAME, SERVER_VERSION } from '../util/version.js';
 
-const USER_AGENT = 'uplup-mcp/0.1 (+https://uplup.com)';
+const USER_AGENT = `${SERVER_NAME}/${SERVER_VERSION} (+https://uplup.com)`;
 
 export class UplupApiClient {
   private readonly http: AxiosInstance;
@@ -20,7 +21,7 @@ export class UplupApiClient {
 
     // If upstream rejects the bearer token mid-session, drop it from the
     // bearer-auth validity cache so the next /mcp request triggers an
-    // HTTP 401 + WWW-Authenticate response — that's the signal the MCP
+    // HTTP 401 + WWW-Authenticate response, which is the signal the MCP
     // client SDK uses to refresh tokens via OAuth and retry transparently.
     this.http.interceptors.response.use(
       (r) => r,

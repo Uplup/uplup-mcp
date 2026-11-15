@@ -1,6 +1,6 @@
 {
   "name": "uplup-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Uplup MCP server. Exposes the Uplup public API as Model Context Protocol tools, resources, and prompts for Claude, ChatGPT, Cursor, and other MCP clients.",
   "license": "MIT",
   "author": "Uplup <hello@uplup.com>",
@@ -23,14 +23,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.7.9",
     "express": "^4.21.2",
     "pino": "^9.5.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
+    "@types/express": "^4.17.21",
     "@types/node": "^22.10.5",
     "@typescript-eslint/eslint-plugin": "^8.20.0",
     "@typescript-eslint/parser": "^8.20.0",

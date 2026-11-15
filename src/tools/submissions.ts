@@ -9,12 +9,13 @@ export function registerSubmissionsTools(server: McpServer, api: UplupApiClient)
     {
       title: 'List submissions',
       description:
-        'Returns submissions for a form. Supports filtering by country and pass/fail (for quizzes), and sorting by newest/oldest/highest_score/lowest_score. Pagination via limit (default 20, max 100) + offset.',
+        'Returns submissions for a form (submission_id, email, phone, country_code, region, values, timestamp, created_at). Filter by country and, for quizzes, pass/fail; sort by newest/oldest/highest_score/lowest_score. Pagination via limit (default 20, max 100) + offset. Plan paywall: on the Free plan, rows over the monthly response limit come back as stubs with is_hidden=true and their values stripped, and the list carries hidden_count with how many were hidden.',
       inputSchema: {
         form_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional(),
         offset: z.number().int().min(0).optional(),
-        sort: z.enum(['newest', 'oldest', 'highest_score', 'lowest_score']).optional(),
+        sort: z.enum(['newest', 'oldest', 'highest_score', 'lowest_score']).optional()
+          .describe('Default newest. highest_score / lowest_score apply to quizzes.'),
         filter_country: z.string().length(2).optional()
           .describe('ISO 3166-1 alpha-2 country code (e.g. "US", "GB").'),
         filter_passed: z.boolean().optional()
@@ -40,7 +41,8 @@ export function registerSubmissionsTools(server: McpServer, api: UplupApiClient)
     'get_submission',
     {
       title: 'Get submission',
-      description: 'Fetch a single submission with all field answers and metadata.',
+      description:
+        'Fetch a single submission with all field answers and metadata. A row beyond the Free plan limit comes back with is_hidden=true and no values.',
       inputSchema: {
         form_id: z.string().min(1),
         submission_id: z.string().min(1),
@@ -59,7 +61,8 @@ export function registerSubmissionsTools(server: McpServer, api: UplupApiClient)
     'delete_submission',
     {
       title: 'Delete submission',
-      description: 'Permanently delete a single submission. Irreversible.',
+      description:
+        'Soft deletes a single submission: it disappears from lists, exports and analytics but is retained upstream. There is no API to restore it.',
       inputSchema: {
         form_id: z.string().min(1),
         submission_id: z.string().min(1),
@@ -78,10 +81,11 @@ export function registerSubmissionsTools(server: McpServer, api: UplupApiClient)
     'export_submissions',
     {
       title: 'Export submissions',
-      description: 'Generate a CSV or JSON export of all submissions on a form.',
+      description:
+        'Export all submissions on a form (up to 10,000, newest first) as CSV or JSON. CSV export needs a paid plan (Pro or higher); the Free plan receives a 403 with an upgrade message. Rows hidden by the plan paywall are omitted from exports.',
       inputSchema: {
         form_id: z.string().min(1),
-        format: z.enum(['csv', 'json']).optional(),
+        format: z.enum(['csv', 'json']).optional().describe('Default json.'),
       },
       annotations: { readOnlyHint: true },
     },
