@@ -43,14 +43,14 @@ jobs:
           path: ./publish/
           remote_path: /var/www/uplup-mcp/
           remote_host: ${{ secrets.DEPLOY_HOST }}
-          remote_user: root
+          remote_user: deploy
           remote_key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Install prod deps + reload pm2
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
-          username: root
+          username: deploy
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /var/www/uplup-mcp
